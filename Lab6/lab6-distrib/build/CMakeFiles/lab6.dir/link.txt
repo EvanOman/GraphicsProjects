@@ -1,0 +1,1 @@
+/usr/bin/c++   --std=c++11    CMakeFiles/lab6.dir/lab6.o CMakeFiles/lab6.dir/CircleInclude.o CMakeFiles/lab6.dir/TorusInclude.o  -o lab6  -L/home/evan/Dev/CG/Lab6/lab6-distrib/build/glfw-3.1/src -rdynamic glfw-3.1/src/libglfw3.a -lX11 -lpthread -lXrandr -lXinerama -lXi -lXxf86vm -lrt -lm -lXcursor -lGL 

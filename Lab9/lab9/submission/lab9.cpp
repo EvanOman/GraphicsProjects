@@ -1,0 +1,428 @@
+//
+// EVAN OMAN
+//
+
+#include "glinclude.h"
+#include "glm/gtc/matrix_inverse.hpp"
+#include "util.h"
+
+#include <cmath>
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <memory>
+
+#include "ShaderCode.h"
+
+#include "Mesh.h"
+#include "Shader.h"
+#include "Framebuffer.h"
+#include "Texture.h"
+#include "OBJLoader.h"
+#include "CircleInclude.h"
+#include "TorusInclude.h"
+
+const std::string MATCAP1_FILENAME="/home/graphics/Downloads/litSphere/blue.ppm";
+const std::string MATCAP2_FILENAME="/home/graphics/Downloads/litSphere/peach.ppm";
+const std::string BUNNY_FILENAME="/home/graphics/Downloads/litSphere/bun_zipper.obj";
+
+using namespace std;
+
+// Structure to hold the various OpenGL names for the buffers and array that
+// hold our 3D geometry
+
+// Function prototypes for the functions declared in this file
+void printOpenGLInfo();
+
+void drawGeometry(std::shared_ptr<Mesh> mesh, std::shared_ptr<Shader> shader);
+
+std::shared_ptr<Mesh> updateGeometry(std::shared_ptr<Mesh> mesh);
+
+void keyboardCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+
+void mouseCallback(GLFWwindow *window, double x, double y);
+
+double around;
+double up;
+double cameraDistance;
+
+double oldMouseX;
+double oldMouseY;
+
+int currentObject = 1;
+bool needUpdate = true;
+
+bool doAnimation = true;
+float light1Around = 0;
+float light2Around = 1;
+
+int main() {
+    // Initialize the GLFW library
+    int result = glfwInit();
+    assertMsg(result, "Error initializing GLFW");
+    
+    // Request an OpenGL 3.2 core profile
+    glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    
+    int width = 640;
+    int height = 480;
+    
+    // Create 640x480 point window
+    GLFWwindow *window = glfwCreateWindow(width, height, "SHADY BUNNIES", nullptr, nullptr);
+    
+    assertMsg(window != nullptr, "Error creating window");
+    
+    around = 0;
+    up = 0;
+    cameraDistance = 2.0;
+    
+    glfwSetKeyCallback(window, keyboardCallback);
+    glfwSetCursorPosCallback(window, mouseCallback);
+    
+    // Activate the OpenGL context associated with the window we created
+    glfwMakeContextCurrent(window);
+    
+    glEnable(GL_DEPTH_TEST);
+    
+    // Print out OpenGL vendor and version
+    printOpenGLInfo();
+    
+    auto mesh = std::make_shared<Mesh>();
+    auto surfaceShader = std::make_shared<Shader>(shaderPhongVert, shaderPhongFrag);
+    
+    auto matcap1Tex = std::make_shared<Texture>(MATCAP1_FILENAME);
+    matcap1Tex->setClamp(true);
+    matcap1Tex->setMipMapping(false);
+    
+    auto matcap2Tex = std::make_shared<Texture>(MATCAP2_FILENAME);
+    matcap2Tex->setClamp(true);
+    matcap2Tex->setMipMapping(false);
+    
+    // This is what's called the "run loop" or "rendering loop"
+    // We keep looping until the user wants to quit.
+    int frame = 0;
+    while (!glfwWindowShouldClose(window)) {
+        assertGLOk();
+        
+        // If needed, update the geometry on the GPU
+        mesh = updateGeometry(mesh);
+        glUseProgram(surfaceShader->getProgramName());
+        
+        matcap1Tex->bindTexture(surfaceShader, "matcap1Tex", 0);
+        matcap2Tex->bindTexture(surfaceShader, "matcap2Tex", 1);
+        
+        // Set the color to clear the widow with
+        glClearColor(0.35, 0.35, 0.35, 0.0);
+        
+        // Clear both the color and the depth buffers
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        
+        
+        // Draw the geometry to the screen using the shader program
+        drawGeometry(mesh, surfaceShader);
+        
+        // Swap the front and back buffers
+        glfwSwapBuffers(window);
+        
+        // Check for any user events, such as pressing a key or clicking
+        // the "close" button
+        glfwPollEvents();
+        
+        // Increase the frame counter
+        frame++;
+    }
+    
+    // Window has been created.  Before quitting, we need to clean up
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
+}
+
+// Utility function to print out the OpenGL vendor and version
+void printOpenGLInfo() {
+    assertGLOk();
+    const GLubyte *str;
+    str = glGetString(GL_VENDOR);
+    cout << "GL_VENDOR: " << str << endl;
+    
+    str = glGetString(GL_VERSION);
+    cout << "GL_VERSION: " << str << endl;
+    
+    assertGLOk();
+}
+
+// Given as input a shader type (either GL_VERTEX_SHADER or GL_FRAGMENT_SHADER),
+// create a shader on the GPU, copy the source to the GPU, and compile the
+// shader.  If any errors are detected, displays an error message and calls
+// abort().  Returns the name of the shader
+GLuint loadShader(GLenum type, const std::string &source) {
+    GLuint shader = 0;
+    shader = glCreateShader(type);
+    
+    assertMsg(shader != 0, "Error creating shader");
+    
+    // Send shader source to the graphics card.
+    //
+    // OpenGL demands a const char** for the shader source.
+    // Create a const char* pointing to the std::string's c-string
+    // representation and then pass a pointer to that to glShaderSource
+    const char* shader_cstr = source.c_str();
+    glShaderSource(shader, 1, &shader_cstr, nullptr);
+    
+    // Compile the shader source
+    glCompileShader(shader);
+
+    // Get shader status to see if there was a compilation error
+    GLint status;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (status != GL_TRUE) {
+        cerr << "Error compiling shader:" << endl;
+        const int BUFFER_SIZE = 8192;
+        char errorMessage[BUFFER_SIZE];
+        int messageLength;
+        glGetShaderInfoLog(shader, BUFFER_SIZE, &messageLength, errorMessage);
+        cerr << errorMessage << endl;
+        abort();
+    }
+    // Return name of compiled shader
+    return shader;
+}
+
+
+
+std::shared_ptr<Mesh> updateGeometry(std::shared_ptr<Mesh> oldMesh) {
+    
+    auto mesh = std::make_shared<Mesh>();
+    assertGLOk();
+    
+    // If we don't need to update geometry on graphics card, return.
+    if (!needUpdate) return oldMesh;
+    
+    vector<glm::vec4> positions;
+    vector<glm::vec4> texCoords;
+    vector<glm::vec4> normals;
+    vector<int> indices;
+    
+    if (currentObject == 1) {
+        positions = {
+            {0,-1,-1,1},
+            {0,1,-1,1},
+            {0,1,1,1},
+            {0,-1,1,1},
+        };
+        
+        texCoords = {
+            {0,1,0,0},
+            {0,0,0,0},
+            {1,0,0,0},
+            {1,1,0,0},
+        };
+        
+        normals = {
+            {1,0,0,0},
+            {1,0,0,0},
+            {1,0,0,0},
+            {1,0,0,0},
+        };
+        
+        indices = {
+            0,1,2,
+            0,2,3,
+        };
+
+    } else if (currentObject == 2) {
+        int MAX_AROUND = 20;
+        for (int x=0; x<MAX_AROUND; x++) {
+            float angle = x * 3.141592 * 2.0 / MAX_AROUND;
+            positions.push_back({cos(angle), 0.5, sin(angle), 1.0});
+            positions.push_back({cos(angle), -0.5, sin(angle), 1.0});
+            
+            normals.push_back({cos(angle), 0, sin(angle), 0});
+            normals.push_back({cos(angle), 0, sin(angle), 0});
+            
+            texCoords.push_back({x * 1.0 / MAX_AROUND, 1, 0, 0});
+            texCoords.push_back({x * 1.0 / MAX_AROUND, 0, 0, 0});
+        }
+        for (int x=2; x<positions.size(); x++) {
+            indices.push_back(x);
+            indices.push_back(x-1);
+            indices.push_back(x-2);
+        }
+        indices.push_back(positions.size()-2);
+        indices.push_back(positions.size()-1);
+        indices.push_back(0);
+        
+        indices.push_back(positions.size()-1);
+        indices.push_back(0);
+        indices.push_back(1);
+    } else if (currentObject == 3) {
+        positions = circlePositions();
+        normals = circleNormals();
+        indices = circleIndices();
+    } else if (currentObject == 4) {
+        positions = torusPositions();
+        normals = torusNormals();
+        indices = torusIndices();
+    } else if (currentObject == 5) {
+        OBJLoader obl(BUNNY_FILENAME, {0.2,-1.0,0,0});
+        positions = obl.getPositions();
+        normals = obl.getNormals();
+        indices = obl.getIndices();
+    } else if (currentObject == 6) {
+        
+    }
+    
+    needUpdate = false;
+    
+    // Check to make sure all attribute vectors are the same size
+    assertMsg(positions.size() == normals.size(), "Positions and normals different size");
+    
+    mesh->setAttribute("vertPos", positions);
+    mesh->setAttribute("vertNormal", normals);
+    mesh->setIndices(indices);
+    
+    return mesh;
+}
+
+// Render geometry to screen with a given shader program
+void drawGeometry(std::shared_ptr<Mesh> mesh, std::shared_ptr<Shader> shader) {
+    static float previousTime = glfwGetTime();
+    float curTime = glfwGetTime();
+    float deltaTime = curTime - previousTime;
+    previousTime = curTime;
+    
+    assertGLOk();
+    
+    GLuint program = shader->getProgramName();
+    
+    // Use our shader to draw to the screen
+    glUseProgram(program);
+    
+    glm::mat4 rot(1.0);
+    
+    glm::vec3 eyePos{cos(around)*cos(up)*cameraDistance,
+        sin(up)*cameraDistance,
+        sin(around)*cos(up)*cameraDistance};
+    
+    rot = glm::lookAt(eyePos, glm::vec3{0.0, 0.0, 0.0}, glm::vec3{0.0, 1.0, 0.0});//  * rot;
+    
+    glm::mat4 normalMatrix = glm::inverseTranspose(rot);
+    
+    rot = glm::perspective<float>(3.141 * 0.30, 4.0/3.0, 0.01, 20.0) * rot;
+    
+    GLint rotLocation;
+    rotLocation = glGetUniformLocation(program, "rot");
+    if (rotLocation != -1) {
+        glUniformMatrix4fv(rotLocation, 1, GL_FALSE, glm::value_ptr(rot));
+    }
+    
+    GLint normalLocation;
+    normalLocation = glGetUniformLocation(program, "normalMatrix");
+    if (normalLocation != -1) {
+        glUniformMatrix4fv(normalLocation, 1, GL_FALSE, glm::value_ptr(normalMatrix));
+    }
+    
+    GLint eyeLocation = glGetUniformLocation(program, "eyePos");
+    
+    if (eyeLocation != -1) {
+        glUniform4f(eyeLocation, eyePos.x, eyePos.y, eyePos.z, 1.0);
+    }
+    
+    GLint lightDirectionLocation = glGetUniformLocation(program, "lightDirection1");
+    
+    if (doAnimation) {
+        light1Around += deltaTime;
+    }
+    glm::vec4 lightDirection{cos(light1Around), 1.0, sin(light1Around), 0};
+    lightDirection = glm::normalize(lightDirection);
+    if (lightDirectionLocation != -1) {
+        glUniform4f(lightDirectionLocation, lightDirection.x, lightDirection.y, lightDirection.z, lightDirection.w);
+    }
+    
+    GLint lightColorLocation = glGetUniformLocation(program, "lightColor1");
+    if (lightColorLocation != -1) {
+        glUniform4f(lightColorLocation, 0.9, 0.5, 0.2, 1.0);
+    }
+    
+    
+    
+    
+    
+    
+    if (doAnimation) {
+        light2Around += 0.4*deltaTime;
+    }
+    glm::vec4 lightDirection2{cos(light2Around), -0.2, sin(light2Around), 0};
+    
+    GLint ambientColorLocation = glGetUniformLocation(program, "ambientColor");
+    if (ambientColorLocation != -1) {
+        glUniform4f(ambientColorLocation, 0.05, 0.12, 0.20, 1.0);
+    }
+    
+    assertGLOk();
+    
+    mesh->render(shader);
+    
+    assertGLOk();
+}
+
+void keyboardCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action == GLFW_PRESS) {
+        if (key == GLFW_KEY_1) {
+            currentObject = 1;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_2) {
+            currentObject = 2;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_3) {
+            currentObject = 3;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_4) {
+            currentObject = 4;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_5) {
+            currentObject = 5;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_6) {
+            currentObject = 6;
+            needUpdate = true;
+        } else if (key == GLFW_KEY_SPACE) {
+            doAnimation = !doAnimation;
+        }
+    }
+}
+
+void mouseCallback(GLFWwindow *window, double x, double y) {
+    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS) {
+        double deltaX = x - oldMouseX;
+        double deltaY = y - oldMouseY;
+        
+        around += deltaX * 0.01;
+        up += deltaY * 0.01;
+        
+        if (up > 3.13/2) {
+            up = 3.13/2;
+        }
+        if (up < -3.13/2) {
+            up = -3.13/2;
+        }
+    }
+    oldMouseX = x;
+    oldMouseY = y;
+}
+
+
+
+
+
+
+
+
+
+
+
+
